@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Deployment Result</title>
+
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;500;700&display=swap" rel="stylesheet">
+
+    <style>
+        body {
+            margin: 0;
+            font-family: 'Poppins', sans-serif;
+            background: linear-gradient(135deg, #141e30, #243b55);
+            color: white;
+        }
+
+        .container {
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .card {
+            background: rgba(255,255,255,0.1);
+            padding: 40px;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+            text-align: center;
+            width: 450px;
+            box-shadow: 0px 10px 30px rgba(0,0,0,0.4);
+        }
+
+        .success { color: #4CAF50; }
+        .error { color: #ff4d4d; }
+
+        a {
+            display: inline-block;
+            margin-top: 20px;
+            text-decoration: none;
+            color: #00c6ff;
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="container">
+    <div class="card">
+
+        {% if success %}
+         {% if port %}
+         <p><strong>Docker Image:</strong> {{ image }}</p>
+	 <p><strong>Container Port:</strong> {{ container_port }}</p>
+         <p><strong>Running on Port:</strong> {{ port }}</p>
+         <p><strong>Access URL:</strong> <a href="{{ url }}" target="_blank">{{ url }}</a></p>
+         {% endif %}
+           {% if image %}
+           <p><strong>Docker Image:</strong> {{ image }}</p>
+           {% endif %}
+            <h2 class="success">✅ Deployment Successful</h2>
+            <p><strong>Repo:</strong> {{ repo }}</p>
+            <p><strong>Path:</strong> {{ path }}</p>
+        {% else %}
+            <h2 class="error">❌ Deployment Failed</h2>
+            <pre>{{ error }}</pre>
+        {% endif %}
+
+        <a href="/">⬅ Back</a>
+
+    </div>
+</div>
+
+</body>
+</html>
