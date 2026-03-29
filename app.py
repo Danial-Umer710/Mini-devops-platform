@@ -1,7 +1,6 @@
 import os
 import shutil
 import subprocess
-import requests
 import json
 from datetime import datetime
 from flask import Flask, render_template, request, redirect, url_for, jsonify
@@ -12,6 +11,7 @@ BASE_DIR = "deployments"
 HISTORY_FILE = os.path.join(BASE_DIR, "deployments.json")
 START_PORT = 5001
 
+# Ensure directories/files exist
 if not os.path.exists(BASE_DIR):
     os.makedirs(BASE_DIR)
 
@@ -54,6 +54,10 @@ def detect_container_port(repo_path):
         pass
     return "5000"
 
+def cleanup_old_container(container_name, image_name):
+    subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
+    subprocess.run(["docker", "rmi", "-f", image_name], capture_output=True)
+
 def get_all_containers():
     containers = []
     result = subprocess.run(
@@ -61,20 +65,23 @@ def get_all_containers():
         capture_output=True, text=True
     )
     for line in result.stdout.splitlines():
-        name, status, ports = line.split("|")
-        host_port = "N/A"
-        if "->" in ports:
-            for part in ports.split(","):
-                if "->" in part:
-                    host_part = part.split("->")[0]
-                    if ":" in host_part:
-                        host_port = host_part.split(":")[-1]
-        containers.append({
-            "name": name,
-            "status": status,
-            "port": host_port,
-            "url": f"http://localhost:{host_port}" if host_port != "N/A" else "#"
-        })
+        try:
+            name, status, ports = line.split("|")
+            host_port = "N/A"
+            if "->" in ports:
+                for part in ports.split(","):
+                    if "->" in part:
+                        host_part = part.split("->")[0]
+                        if ":" in host_part:
+                            host_port = host_part.split(":")[-1]
+            containers.append({
+                "name": name,
+                "status": status,
+                "port": host_port,
+                "url": f"http://localhost:{host_port}" if host_port != "N/A" else "#"
+            })
+        except:
+            continue
     return containers
 
 def read_history():
@@ -94,50 +101,6 @@ def add_history(repo_name, status):
     })
     write_history(history)
 
-# ----------------- WEBHOOK LOGIC -----------------
-
-def redeploy_repo(repo_name):
-    repo_path = os.path.join(BASE_DIR, repo_name)
-    container_name = f"{repo_name.lower()}-container"
-    image_name = f"{repo_name.lower()}-image"
-
-    if not os.path.exists(repo_path):
-        print(f"[Webhook] Repo not found locally: {repo_name}")
-        return
-
-    print(f"[Webhook] Pulling latest code for {repo_name}...")
-    subprocess.run(["git", "-C", repo_path, "pull"])
-
-    print(f"[Webhook] Rebuilding Docker image...")
-    build = subprocess.run(
-        ["docker", "build", "-t", image_name, repo_path],
-        capture_output=True, text=True
-    )
-
-    if build.returncode != 0:
-        print("[Webhook] Build failed:", build.stderr)
-        return
-
-    print(f"[Webhook] Restarting container...")
-
-    # Stop old container if exists
-    subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
-
-    container_port = detect_container_port(repo_path)
-    host_port = get_next_port()
-
-    run = subprocess.run(
-        ["docker", "run", "-d", "-p", f"{host_port}:{container_port}", "--name", container_name, image_name],
-        capture_output=True, text=True
-    )
-
-    if run.returncode != 0:
-        print("[Webhook] Run failed:", run.stderr)
-        return
-
-    add_history(repo_name, "auto-redeployed")
-    print(f"[Webhook] {repo_name} redeployed successfully!")
-
 # ----------------- ROUTES -----------------
 
 @app.route('/')
@@ -153,26 +116,55 @@ def deploy_page():
         container_name = f"{repo_name.lower()}-container"
         image_name = f"{repo_name.lower()}-image"
 
+        # ✅ CHECK IF ALREADY DEPLOYED
+        check = subprocess.run(
+            ["docker", "ps", "-a", "--format", "{{.Names}}"],
+            capture_output=True, text=True
+        )
+        existing_containers = check.stdout.splitlines()
+
+        if container_name in existing_containers:
+            return render_template(
+                "deploy.html",
+                error=f"⚠️ Repo '{repo_name}' is already deployed! Go to dashboard."
+            )
+
+        # Clean any leftover (safety)
+        cleanup_old_container(container_name, image_name)
+
+        # Remove repo folder if exists
         if os.path.exists(repo_path):
             shutil.rmtree(repo_path)
 
-        subprocess.run(["git", "clone", repo_url, repo_path])
+        # Clone repo
+        clone = subprocess.run(["git", "clone", repo_url, repo_path], capture_output=True, text=True)
+        if clone.returncode != 0:
+            return render_template("deploy.html", error=f"Git clone failed:\n{clone.stderr}")
 
-        subprocess.run(["docker", "build", "-t", image_name, repo_path])
+        # Build image
+        build = subprocess.run(["docker", "build", "-t", image_name, repo_path], capture_output=True, text=True)
+        if build.returncode != 0:
+            return render_template("deploy.html", error=f"Docker build failed:\n{build.stderr}")
 
+        # Run container
         container_port = detect_container_port(repo_path)
         host_port = get_next_port()
 
-        subprocess.run([
-            "docker", "run", "-d",
-            "-p", f"{host_port}:{container_port}",
-            "--name", container_name,
-            image_name
-        ])
+        run = subprocess.run(
+            ["docker", "run", "-d", "-p", f"{host_port}:{container_port}", "--name", container_name, image_name],
+            capture_output=True, text=True
+        )
+        if run.returncode != 0:
+            return render_template("deploy.html", error=f"Docker run failed:\n{run.stderr}")
 
         add_history(repo_name, "running")
 
-        return render_template("deploy.html", success=True, repo=repo_name, url=f"http://localhost:{host_port}")
+        return render_template(
+            "deploy.html",
+            success=True,
+            repo=repo_name,
+            url=f"http://localhost:{host_port}"
+        )
 
     return render_template("deploy.html")
 
@@ -190,7 +182,7 @@ def logs(name):
     return jsonify({"logs": result.stdout})
 
 @app.route('/toggle/<name>')
-def toggle(name):
+def toggle_container(name):
     result = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", name], capture_output=True, text=True)
     if result.stdout.strip() == "true":
         subprocess.run(["docker", "stop", name])
@@ -201,28 +193,10 @@ def toggle(name):
     return redirect(url_for("dashboard"))
 
 @app.route('/delete/<name>')
-def delete(name):
+def delete_container(name):
     subprocess.run(["docker", "rm", "-f", name])
     add_history(name, "deleted")
     return redirect(url_for("dashboard"))
-
-# ----------------- WEBHOOK ROUTE -----------------
-
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    data = request.json
-
-    try:
-        repo_name = data['repository']['name']
-        print(f"[Webhook] Push received for {repo_name}")
-
-        redeploy_repo(repo_name)
-
-        return "Webhook received", 200
-
-    except Exception as e:
-        print("[Webhook Error]", str(e))
-        return "Error", 400
 
 # ----------------- RUN -----------------
 
