@@ -4,6 +4,7 @@ A self-hosted, one-click deployment tool for Linux. A Python/Flask service takes
 
 ## Tech Stack
 
+![CI](https://github.com/Danial-Umer710/Mini-devops-platform/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/Python-3-3776AB?logo=python&logoColor=white)
 ![Flask](https://img.shields.io/badge/Flask-3.1-000000?logo=flask&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-Engine-2496ED?logo=docker&logoColor=white)
@@ -72,45 +73,35 @@ Open http://127.0.0.1:5000, paste a public GitHub repo URL that contains a `Dock
 
 ## Testing & Verification
 
-The repo has no automated test suite yet. You can check the full deploy lifecycle and the duplicate guard from a second terminal while `python app.py` is running:
+**Unit tests** (`tests/test_app.py`, 16 tests). `subprocess.run` is replaced with a fake, so they need no Docker daemon or network. They cover port allocation, container-port detection, the clone → build → run flow, the duplicate-deploy guard, failure handling, the dashboard, logs, toggle and delete.
 
 ```bash
-REPO=https://github.com/Danial-Umer710/docker-nginx-website.git
-
-# 1. Deploy: returns the URL of the running app
-curl -s -X POST http://127.0.0.1:5000/deploy -d repo=$REPO | grep -o 'http://localhost:[0-9]*'
-
-# 2. Same request again: rejected (idempotent duplicate prevention)
-curl -s -X POST http://127.0.0.1:5000/deploy -d repo=$REPO | grep -o 'already deployed'
-
-# 3. Container is running on the allocated port and serving traffic
-docker ps --format '{{.Names}}  {{.Ports}}'
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:5001
-
-# 4. Logs API and history
-curl -s http://127.0.0.1:5000/logs/docker-nginx-website-container | head -c 120
-cat deployments/deployments.json
-
-# 5. Clean up
-curl -s -o /dev/null http://127.0.0.1:5000/delete/docker-nginx-website-container
+pip install -r requirements-dev.txt
+pytest -v
 ```
 
-Expected output:
-
 ```
-http://localhost:5001
-already deployed
-docker-nginx-website-container  0.0.0.0:5001->80/tcp, [::]:5001->80/tcp
-200
-{
-  "logs": "/docker-entrypoint.sh: /docker-entrypoint.d/ is not empty, ...
-[
-  {
-    "repo": "docker-nginx-website",
-    "time": "2026-11-05 17:05:29",
-    "status": "running"
-  }
-]
+tests/test_app.py::test_deploy_clones_builds_and_runs PASSED             [ 50%]
+tests/test_app.py::test_deploy_is_idempotent PASSED                      [ 56%]
+...
+============================== 16 passed in 0.12s ==============================
 ```
 
-The first deploy of a small nginx-based repo took about 1.5 s on a warm Docker cache.
+**End-to-end smoke test** (`scripts/smoke_test.sh`, needs Docker). It starts `app.py`, deploys [docker-nginx-website](https://github.com/Danial-Umer710/docker-nginx-website) for real, sends the same deploy again, checks the running app and the logs API, then deletes the container:
+
+```bash
+./scripts/smoke_test.sh
+```
+
+```
+PASS  first deploy           -> http://localhost:5001
+PASS  second deploy skipped  -> already deployed
+PASS  deployed app           -> HTTP 200
+PASS  logs API               -> /logs/docker-nginx-website-container
+PASS  delete                 -> container removed
+SMOKE TEST PASSED
+```
+
+Set `REPO_URL=<any repo with a Dockerfile>` to smoke-test a different project.
+
+**CI:** `.github/workflows/ci.yml` runs the unit tests, then the Docker smoke test, on every push and pull request.
